@@ -45,7 +45,7 @@ dotnet publish -c Release -r win-x64 --self-contained
 ```
 
 ### 3. Service Installation
-Run PowerShell as Administrator:
+Run PowerShell as Administrator (Right-Click Windows on your Taskbar - Click Powershell(Administrator) or Terminal(Administrator):
 ```powershell
 # Install service
 New-Service -Name "LockMonitor" -BinaryPathName "C:\path\to\your\published\exe"
