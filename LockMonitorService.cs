@@ -5,16 +5,18 @@ using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.ServiceProcess;
+using System.Threading;
 
 namespace LockStatusService 
 {
     public class LockService : ServiceBase
     {
-        private DiscordSocketClient _client;
+        private DiscordSocketClient? _client;
         private const string TOKEN = "YOUR_BOT_TOKEN";
         private const ulong CHANNEL_ID = 123456789;
         private bool _wasLocked = false;
         private IMessageChannel? _channel;
+        private readonly ManualResetEvent _stopEvent = new ManualResetEvent(false);
 
         [DllImport("user32.dll")]
         static extern bool LockWorkStation();
@@ -22,39 +24,54 @@ namespace LockStatusService
         public LockService()
         {
             ServiceName = "LockMonitor";
+            CanHandlePowerEvent = true;
+            CanHandleSessionChangeEvent = true;
         }
 
         protected override void OnStart(string[] args)
         {
-            _client = new DiscordSocketClient(new DiscordSocketConfig
+            // Start Discord connection in background thread
+            Task.Run(async () => 
             {
-                LogLevel = LogSeverity.Debug,
-                MessageCacheSize = 50,
-                GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent
-            });
+                try 
+                {
+                    _client = new DiscordSocketClient(new DiscordSocketConfig
+                    {
+                        LogLevel = LogSeverity.Debug,
+                        MessageCacheSize = 50,
+                        GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent
+                    });
             
-            _client.Log += Log;
-            _client.MessageReceived += HandleCommand;
-            _client.Ready += Ready;
+                    _client.MessageReceived += HandleCommand;
+                    _client.Ready += Ready;
 
-            SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
+                    await _client.LoginAsync(TokenType.Bot, TOKEN);
+                    await _client.StartAsync();
 
-            _client.LoginAsync(TokenType.Bot, TOKEN).GetAwaiter().GetResult();
-            _client.StartAsync().GetAwaiter().GetResult();
+                    SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
+
+                    // Keep the task alive
+                    await Task.Run(() => _stopEvent.WaitOne());
+                }
+                catch (Exception ex) 
+                {
+                    // Log error but don't crash service
+                    using (var eventLog = new System.Diagnostics.EventLog("Application"))
+                    {
+                        eventLog.Source = "LockMonitor";
+                        eventLog.WriteEntry($"Service error: {ex.Message}", System.Diagnostics.EventLogEntryType.Error);
+                    }
+                }
+            });
         }
 
         private async Task Ready()
         {
-            _channel = _client.GetChannel(CHANNEL_ID) as IMessageChannel;
+            _channel = _client?.GetChannel(CHANNEL_ID) as IMessageChannel;
             if (_channel != null)
             {
-                await _channel.SendMessageAsync("🟢 Service started and monitoring lock status");
+                await _channel.SendMessageAsync("🟢 Bot started and monitoring lock status");
             }
-        }
-
-        private Task Log(LogMessage msg)
-        {
-            return Task.CompletedTask;
         }
 
         private async Task HandleCommand(SocketMessage message)
@@ -64,7 +81,6 @@ namespace LockStatusService
             string command = message.Content.ToLower();
             switch (command)
             {
-                case "!locked":
                 case "!status":
                     await message.Channel.SendMessageAsync($"🔒 Status: {(_wasLocked ? "Locked" : "Unlocked")} | Last checked: {DateTime.Now}");
                     break;
@@ -79,14 +95,6 @@ namespace LockStatusService
                     {
                         await message.Channel.SendMessageAsync("❌ Failed to lock computer");
                     }
-                    break;
-
-                case "!help":
-                    await message.Channel.SendMessageAsync(
-                        "📋 Available commands:\n" +
-                        "!locked or !status - Check lock status\n" +
-                        "!lock - Lock the computer"
-                    );
                     break;
             }
         }
@@ -109,6 +117,7 @@ namespace LockStatusService
 
         protected override void OnStop()
         {
+            _stopEvent.Set();  // Signal the background task to stop
             SystemEvents.SessionSwitch -= SystemEvents_SessionSwitch;
             _client?.StopAsync().GetAwaiter().GetResult();
             _client?.LogoutAsync().GetAwaiter().GetResult();
