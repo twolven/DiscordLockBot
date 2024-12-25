@@ -36,7 +36,7 @@ dotnet add package Microsoft.Win32.SystemEvents
 dotnet add package System.ServiceProcess.ServiceController
 
 # Update configuration
-# Edit Program.cs and replace:
+# Edit LockMonitorService.cs and replace:
 # - YOUR_BOT_TOKEN with Discord bot token
 # - CHANNEL_ID with Discord channel ID
 
