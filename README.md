@@ -1,13 +1,14 @@
 ﻿# DiscordLockBot
 
-A lightweight Windows service that monitors your computer's lock status and reports to Discord. Get notifications when your PC locks/unlocks and control locking remotely.
+A lightweight Windows tray application that monitors your computer's lock status and reports to Discord. Get notifications when your PC locks/unlocks and control locking remotely.
 
 ## Features
 - 🔒 Real-time lock/unlock notifications
 - 💬 Discord commands to check status and control PC
-- 🚀 Runs as Windows service
-- 🔄 Auto-restarts if crashed
-- 🟢 Startup notifications
+- 🎯 System tray integration
+- 🚀 Startup support
+- 🔄 Minimal resource usage
+- 🟢 Status notifications
 
 ## Prerequisites
 1. [.NET SDK 9.0](https://dotnet.microsoft.com/download)
@@ -30,60 +31,52 @@ A lightweight Windows service that monitors your computer's lock status and repo
 git clone https://github.com/twolven/DiscordLockBot
 cd DiscordLockBot
 
-# Install dependencies
-dotnet add package Discord.Net
-dotnet add package Microsoft.Win32.SystemEvents
-dotnet add package System.ServiceProcess.ServiceController
-
 # Update configuration
-# Edit LockMonitorService.cs and replace:
-# - YOUR_BOT_TOKEN with Discord bot token
-# - CHANNEL_ID with Discord channel ID
+# Edit Program.cs and replace:
+# - TOKEN with your Discord bot token
+# - CHANNEL_ID with your Discord channel ID
 
-# Build service
-dotnet publish -c Release -r win-x64 --self-contained
-```
-
-### 3. Service Installation
-Run PowerShell as Administrator (Right-Click Windows on your Taskbar - Click Powershell(Administrator) or Terminal(Administrator):
-```powershell
-# Install service
-New-Service -Name "LockMonitor" -BinaryPathName "C:\path\to\your\published\exe"
-
-# Configure auto-start
-sc.exe config LockMonitor start= auto
-
-# Configure auto-restart
-sc.exe failure LockMonitor reset= 0 actions= restart/60000/restart/60000/restart/60000
-
-# Start service
-Start-Service LockMonitor
+# Build application
+# Run build.bat or use command:
+dotnet publish -c Release
 ```
 
 ## Usage
-### Commands
-- `!status` or `!locked` - Check current lock status
+### Running the Application
+1. Run the compiled executable
+2. The application will minimize to system tray
+3. Right-click the tray icon for options:
+   - Show Status: View current connection and lock status
+   - Run at Startup: Toggle automatic startup
+   - Exit: Close the application
+
+### Discord Commands
+- `!status` - Check current lock status
 - `!lock` - Lock computer remotely
 - `!help` - Show available commands
 
 ### Automatic Notifications
 - 🔒 Computer locked notification
 - 🔓 Computer unlocked notification
-- 🟢 Service start notification
+- 🟢 Application start notification
+- 🔴 Application shutdown notification
 
 ## Troubleshooting
-### Service won't start
-Check Windows Event Viewer → Windows Logs → Application for error details
-
-### Discord bot not responding
+### Bot not responding
 1. Verify bot token and channel ID
 2. Check bot has correct permissions
 3. Ensure MESSAGE CONTENT INTENT is enabled
 
-### Service keeps crashing
-1. Stop service: `Stop-Service LockMonitor`
-2. Delete service: `sc.exe delete LockMonitor`
-3. Reinstall following installation steps
+### Application crashes on startup
+1. Check Discord bot token and channel ID are correct
+2. Verify .NET 9.0 is installed
+3. Run application from command line to see error messages
+
+### Startup issues
+If the application won't start with Windows:
+1. Right-click tray icon and uncheck "Run at Startup"
+2. Wait a few seconds
+3. Check "Run at Startup" again
 
 ## Contributing
 Pull requests welcome. For major changes, open issue first.
