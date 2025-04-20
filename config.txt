@@ -1,0 +1,7 @@
+# Configuration for Lock Status Monitor
+
+# Your Discord Bot Token (KEEP THIS SECRET!)
+TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+
+# The ID of the Discord channel where messages should be sent
+CHANNEL_ID=YOUR_DISCORD_CHANNEL_ID_HERE

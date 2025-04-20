@@ -1,49 +1,46 @@
 @echo off
-echo ===============================
-echo LockBot Configuration Checker
-echo ===============================
+echo =====================================
+echo Building Lock Status Monitor
+echo =====================================
 
-set ERROR=0
+REM Configuration is now handled by config.txt at runtime.
+REM The build script no longer checks source code for placeholders.
 
-findstr /C:"private const string TOKEN = \"YOUR_BOT_TOKEN\";" DiscordLockBot.cs >nul
-if not errorlevel 1 (
-    echo [X] Discord bot token not configured
-    echo     Edit DiscordLockBot.cs and replace YOUR_BOT_TOKEN with your bot token
-    echo     Get one from https://discord.com/developers/applications
-    set ERROR=1
-) else (
-    echo [✓] Discord token configured
-)
-
-findstr /C:"private const ulong CHANNEL_ID = 123456789;" DiscordLockBot.cs >nul
-if not errorlevel 1 (
-    echo [X] Discord channel ID not configured
-    echo     Edit DiscordLockBot.cs and replace 123456789 with your channel ID
-    echo     Enable Developer Mode in Discord to copy channel IDs
-    set ERROR=1
-) else (
-    echo [✓] Channel ID configured
-)
-
-echo ===============================
-if %ERROR%==1 (
-    echo Build cancelled: Please fix configuration errors
-    pause
-    exit /b 1
-)
-
-echo Building LockBot...
+echo Building the application...
+REM Use the correct project/solution file if needed, otherwise dotnet publish often finds it.
 dotnet publish -c Release
 
+REM Check if the build command failed
 if errorlevel 1 (
-    echo Build failed!
+    echo.
+    echo =====================================
+    echo          BUILD FAILED!
+    echo =====================================
+    echo Check the output above for errors.
     pause
     exit /b 1
 )
 
-echo ===============================
-echo Build completed successfully!
-echo The executable can be found in:
-echo bin\Release\net9.0-windows\publish\
-echo ===============================
+echo.
+echo =====================================
+echo      BUILD COMPLETED SUCCESSFULLY!
+echo =====================================
+echo The application executable can be found in a subfolder within:
+echo bin\Release\ (e.g., bin\Release\netX.Y-windows\publish\)
+echo.
+echo =====================================
+echo          IMPORTANT REMINDER
+echo =====================================
+echo Before running the application, you MUST create a 'config.txt'
+echo file in the same directory as the .exe file.
+echo.
+echo This file needs to contain your:
+echo   TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+echo   CHANNEL_ID=YOUR_DISCORD_CHANNEL_ID_HERE
+echo.
+echo (Replace the placeholders with your actual token and channel ID)
+echo See the README.md for more details.
+echo =====================================
+
 pause
+exit /b 0
