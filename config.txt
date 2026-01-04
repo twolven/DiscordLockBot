@@ -5,3 +5,14 @@ TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
 
 # The ID of the Discord channel where messages should be sent
 CHANNEL_ID=YOUR_DISCORD_CHANNEL_ID_HERE
+
+# --- Display Recovery Settings (Optional) ---
+
+# Path to DesktopOK folder (contains exe and .dok files)
+# Download from: https://www.softwareok.com/?seession=DesktopOK
+# Example: C:\DesktopOK
+DESKTOPOK_PATH=
+
+# Delay in milliseconds before restoring windows after unlock (default: 5000)
+# Increase if your monitor takes longer to wake up from sleep
+MONITOR_DELAY_MS=5000

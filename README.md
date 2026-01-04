@@ -10,6 +10,7 @@ A lightweight Windows tray application that monitors your computer's lock status
 - 🚀 Option to run automatically at Windows startup
 - 🟢 Startup/shutdown status notifications in Discord
 - 🔄 Minimal resource usage
+- 🖥️ **Display Recovery** - Automatically restore window positions and desktop icons after unlock (great for OLED monitors that scramble layouts after sleep!)
 
 ## Prerequisites
 
@@ -18,7 +19,7 @@ A lightweight Windows tray application that monitors your computer's lock status
 *   A Discord Bot Token and Channel ID (see Discord Setup below)
 
 **For Compiling from Source (Optional):**
-*   [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) or later (Developed with 8.0, compatible with newer versions)
+*   [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0) or later
 *   Windows 10 or 11
 
 ## Installation
@@ -56,7 +57,7 @@ cd DiscordLockBot
 # Option 2: Use dotnet CLI directly
 dotnet publish -c Release
 
-# Navigate to the publish directory (e.g., bin\Release\net8.0-windows\publish\)
+# Navigate to the publish directory (e.g., bin\Release\net9.0-windows\publish\)
 # Find the config.txt template file (you might need to copy it from the project source
 # into the publish directory manually if the build doesn't include it).
 # Edit config.txt with your Token and Channel ID as described in steps 5-8
@@ -85,6 +86,46 @@ dotnet publish -c Release
 - 🔓 Computer unlocked notification
 - 🟢 Application start notification
 - 🔴 Application shutdown notification (when exited gracefully)
+- 🖥️ Display Recovery completion notification (when enabled)
+
+## Display Recovery Feature
+
+If you have an OLED monitor (or any display that causes window/icon scrambling after waking from sleep), the Display Recovery feature can automatically fix this.
+
+### How It Works
+1. **On Lock**: The application captures the position of all visible windows
+2. **On Unlock**: After a configurable delay (for monitor handshake):
+   - Restores desktop icons using [DesktopOK](https://www.softwareok.com/?seite=Freeware/DesktopOK) (optional)
+   - Restores all window positions to their pre-lock state
+
+### Configuration
+Add these optional settings to your `config.txt`:
+
+```ini
+# --- Display Recovery Settings (Optional) ---
+
+# Path to DesktopOK folder (contains exe and .dok files)
+# Download from: https://www.softwareok.com/?seite=Freeware/DesktopOK
+# Example: C:\DesktopOK
+DESKTOPOK_PATH=C:\DesktopOK
+
+# Delay in milliseconds before restoring windows after unlock (default: 5000)
+# Increase if your monitor takes longer to wake up from sleep
+MONITOR_DELAY_MS=5000
+```
+
+### DesktopOK Setup (Optional)
+1. Download [DesktopOK](https://www.softwareok.com/?seite=Freeware/DesktopOK) (portable version recommended)
+2. Extract to a folder (e.g., `C:\DesktopOK`)
+3. Run DesktopOK and arrange your desktop icons as desired
+4. Save your icon layout (it creates a `.dok` file in the same folder)
+5. Set `DESKTOPOK_PATH` in `config.txt` to your DesktopOK folder
+6. The application will automatically find the most recent `.dok` file and use it
+
+### Notes
+- Window position restoration works independently of DesktopOK
+- If `DESKTOPOK_PATH` is not configured, only window positions are restored
+- The delay allows your monitor to complete its handshake before restoration begins
 
 ## Troubleshooting
 ### Bot not responding / Application won't connect
