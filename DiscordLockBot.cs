@@ -10,6 +10,7 @@ using System.IO; // Required for file operations
 using System.Collections.Generic; // Required for Dictionary
 using System.Reflection; // Required for Assembly.GetExecutingAssembly().Location
 using System.Diagnostics; // Required for Process.Start
+using System.Linq; // Required for LINQ Count()
 
 namespace LockStatusService
 {
@@ -41,11 +42,25 @@ namespace LockStatusService
         public int Bottom;
     }
 
+    // --- Snap Position Enum ---
+    public enum SnapPosition
+    {
+        None,           // Regular floating window - restore it
+        Maximized,      // Maximized window - restore it
+        LeftHalf,       // Snapped to left half - skip
+        RightHalf,      // Snapped to right half - skip
+        TopLeftQuad,    // Snapped to top-left quadrant - skip
+        TopRightQuad,   // Snapped to top-right quadrant - skip
+        BottomLeftQuad, // Snapped to bottom-left quadrant - skip
+        BottomRightQuad // Snapped to bottom-right quadrant - skip
+    }
+
     // --- Window Data Storage Class ---
     public class WindowData
     {
         public IntPtr Handle { get; set; }
         public WINDOWPLACEMENT Placement { get; set; }
+        public SnapPosition SnapState { get; set; } = SnapPosition.None;
     }
 
     public class Program
@@ -101,6 +116,10 @@ namespace LockStatusService
         [DllImport("user32.dll")]
         static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
         // Delegate for EnumWindows callback
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -113,6 +132,7 @@ namespace LockStatusService
         private const uint WS_EX_NOACTIVATE = 0x08000000;
         private const uint GW_OWNER = 4;
         private const uint SW_SHOWMINIMIZED = 2;
+        private const uint SW_SHOWMAXIMIZED = 3;
 
         // --- Constructor ---
         // Constructor now only initializes UI components. Discord setup happens after config load.
@@ -516,6 +536,64 @@ namespace LockStatusService
         }
 
         // --- Window Snapshot Methods ---
+
+        /// <summary>
+        /// Detects if a window is snapped to a screen edge/corner based on its position.
+        /// </summary>
+        private static SnapPosition DetectSnapPosition(IntPtr hWnd, WINDOWPLACEMENT placement)
+        {
+            // Check if maximized first
+            if (placement.showCmd == SW_SHOWMAXIMIZED)
+                return SnapPosition.Maximized;
+
+            // Get actual window rect
+            if (!GetWindowRect(hWnd, out RECT windowRect))
+                return SnapPosition.None;
+
+            int windowWidth = windowRect.Right - windowRect.Left;
+            int windowHeight = windowRect.Bottom - windowRect.Top;
+
+            // Find which screen this window is on
+            Rectangle windowBounds = new Rectangle(windowRect.Left, windowRect.Top, windowWidth, windowHeight);
+            Screen? screen = Screen.FromRectangle(windowBounds);
+            if (screen == null)
+                return SnapPosition.None;
+
+            Rectangle workArea = screen.WorkingArea;
+            int halfWidth = workArea.Width / 2;
+            int halfHeight = workArea.Height / 2;
+
+            // Tolerance for snap detection (pixels)
+            const int tolerance = 20;
+
+            bool leftAligned = Math.Abs(windowRect.Left - workArea.Left) < tolerance;
+            bool rightAligned = Math.Abs(windowRect.Right - workArea.Right) < tolerance;
+            bool topAligned = Math.Abs(windowRect.Top - workArea.Top) < tolerance;
+            bool bottomAligned = Math.Abs(windowRect.Bottom - workArea.Bottom) < tolerance;
+            bool isHalfWidth = Math.Abs(windowWidth - halfWidth) < tolerance;
+            bool isFullWidth = Math.Abs(windowWidth - workArea.Width) < tolerance;
+            bool isHalfHeight = Math.Abs(windowHeight - halfHeight) < tolerance;
+            bool isFullHeight = Math.Abs(windowHeight - workArea.Height) < tolerance;
+
+            // Detect quadrant snaps (4-grid)
+            if (isHalfWidth && isHalfHeight)
+            {
+                if (leftAligned && topAligned) return SnapPosition.TopLeftQuad;
+                if (rightAligned && topAligned) return SnapPosition.TopRightQuad;
+                if (leftAligned && bottomAligned) return SnapPosition.BottomLeftQuad;
+                if (rightAligned && bottomAligned) return SnapPosition.BottomRightQuad;
+            }
+
+            // Detect half snaps
+            if (isHalfWidth && isFullHeight)
+            {
+                if (leftAligned) return SnapPosition.LeftHalf;
+                if (rightAligned) return SnapPosition.RightHalf;
+            }
+
+            return SnapPosition.None;
+        }
+
         /// <summary>
         /// Captures the position and placement of all visible, non-minimized windows.
         /// Called when the session is locked.
@@ -562,10 +640,12 @@ namespace LockStatusService
                         // Only save if not minimized (double-check via showCmd)
                         if (placement.showCmd != SW_SHOWMINIMIZED)
                         {
+                            SnapPosition snapState = DetectSnapPosition(hWnd, placement);
                             _windowSnapshot.Add(new WindowData
                             {
                                 Handle = hWnd,
-                                Placement = placement
+                                Placement = placement,
+                                SnapState = snapState
                             });
                         }
                     }
@@ -573,7 +653,11 @@ namespace LockStatusService
                     return true; // Continue enumeration
                 }, IntPtr.Zero);
 
-                Console.WriteLine($"Window snapshot captured: {_windowSnapshot.Count} windows saved.");
+                // Count snap states for logging
+                int snappedCount = _windowSnapshot.Count(w => w.SnapState != SnapPosition.None && w.SnapState != SnapPosition.Maximized);
+                int maximizedCount = _windowSnapshot.Count(w => w.SnapState == SnapPosition.Maximized);
+                int regularCount = _windowSnapshot.Count(w => w.SnapState == SnapPosition.None);
+                Console.WriteLine($"Window snapshot captured: {_windowSnapshot.Count} total ({regularCount} regular, {maximizedCount} maximized, {snappedCount} snapped).");
             }
         }
 
@@ -658,11 +742,12 @@ namespace LockStatusService
 
             // Step B: Restore window positions
             int restoredCount = 0;
+            int skippedCount = 0;
             int failedCount = 0;
 
             lock (_snapshotLock)
             {
-                Console.WriteLine($"Display Recovery: Restoring {_windowSnapshot.Count} windows...");
+                Console.WriteLine($"Display Recovery: Processing {_windowSnapshot.Count} windows...");
 
                 foreach (var windowData in _windowSnapshot)
                 {
@@ -670,6 +755,14 @@ namespace LockStatusService
                     if (!IsWindow(windowData.Handle))
                     {
                         failedCount++;
+                        continue;
+                    }
+
+                    // Skip snapped windows (halves/quadrants) - Windows handles these correctly
+                    // Only restore: None (regular floating), Maximized
+                    if (windowData.SnapState != SnapPosition.None && windowData.SnapState != SnapPosition.Maximized)
+                    {
+                        skippedCount++;
                         continue;
                     }
 
@@ -689,7 +782,7 @@ namespace LockStatusService
                 _windowSnapshot.Clear();
             }
 
-            Console.WriteLine($"Display Recovery: Restored {restoredCount} windows, {failedCount} failed/invalid.");
+            Console.WriteLine($"Display Recovery: Restored {restoredCount} windows, skipped {skippedCount} snapped, {failedCount} failed/invalid.");
 
             // Send Discord notification about restoration
             if (_channel != null && _client?.ConnectionState == ConnectionState.Connected)
