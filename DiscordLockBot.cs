@@ -11,6 +11,7 @@ using System.Collections.Generic; // Required for Dictionary
 using System.Reflection; // Required for Assembly.GetExecutingAssembly().Location
 using System.Diagnostics; // Required for Process.Start
 using System.Linq; // Required for LINQ Count()
+using System.Threading; // Required for Timer
 
 namespace LockStatusService
 {
@@ -61,6 +62,7 @@ namespace LockStatusService
         public IntPtr Handle { get; set; }
         public WINDOWPLACEMENT Placement { get; set; }
         public SnapPosition SnapState { get; set; } = SnapPosition.None;
+        public Rectangle MonitorBounds { get; set; } // For maximized windows - which monitor they were on
     }
 
     public class Program
@@ -76,6 +78,51 @@ namespace LockStatusService
         private static string? _desktopOKPath; // Path to DesktopOK.exe
         private static string? _desktopOKLayout; // Path to .dok layout file
         private static int _monitorDelayMs = 5000; // Delay before restoring windows (default 5000ms)
+        private static int _lockCooldownMs = 2000; // Cooldown to prevent Win+L spam (default 2000ms)
+
+        // --- Keyboard Hook for Win+L Debounce ---
+        private static IntPtr _keyboardHookId = IntPtr.Zero;
+        private static LowLevelKeyboardProc? _keyboardProc;
+        private static DateTime _lastLockKeyTime = DateTime.MinValue;
+        private static bool _winKeyDown = false;
+        private static int _blockedLockCount = 0;
+        private static int _blockedSinceLastAllow = 0; // Tracks blocks since last allowed Win+L
+
+        // Keyboard hook constants
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYUP = 0x0101;
+        private const int WM_SYSKEYDOWN = 0x0104;
+        private const int WM_SYSKEYUP = 0x0105;
+        private const int VK_LWIN = 0x5B;
+        private const int VK_RWIN = 0x5C;
+        private const int VK_L = 0x4C;
+
+        // Keyboard hook delegate
+        private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
         // --- Window Snapshot Storage ---
         private static List<WindowData> _windowSnapshot = new List<WindowData>();
@@ -120,8 +167,25 @@ namespace LockStatusService
         [return: MarshalAs(UnmanagedType.Bool)]
         static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
         // Delegate for EnumWindows callback
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        // SetWindowPos flags
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOZORDER = 0x0004;
+        private const uint SWP_NOACTIVATE = 0x0010;
+
+        // ShowWindow commands
+        private const int SW_RESTORE = 9;
+        private const int SW_MAXIMIZE = 3;
 
         // Constants for window styles and commands
         private const int GWL_STYLE = -16;
@@ -171,7 +235,11 @@ namespace LockStatusService
                                              "DESKTOPOK_PATH=\n\n" +
                                              "# Delay in milliseconds before restoring windows after unlock (default: 5000)\n" +
                                              "# Increase if your monitor takes longer to wake up from sleep\n" +
-                                             "MONITOR_DELAY_MS=5000\n";
+                                             "MONITOR_DELAY_MS=5000\n\n" +
+                                             "# --- Win+L Debounce Settings ---\n\n" +
+                                             "# Cooldown in milliseconds to prevent Win+L spam from fingerprint reader lock buttons\n" +
+                                             "# Set to 0 to disable. Default is 2000ms (2 seconds)\n" +
+                                             "LOCK_COOLDOWN_MS=2000\n";
                     File.WriteAllText(configPath, templateContent);
                     MessageBox.Show($"Configuration file '{ConfigFileName}' was not found.\n\nA template has been created at:\n{configPath}\n\nPlease edit it with your actual Bot Token and Channel ID, then restart the application.",
                                     "Configuration Needed", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -248,6 +316,17 @@ namespace LockStatusService
                 else
                 {
                     Console.WriteLine($"Using default monitor delay: {_monitorDelayMs}ms");
+                }
+
+                // Load Win+L cooldown setting (prevents fingerprint reader lock button spam)
+                if (configValues.TryGetValue("LOCK_COOLDOWN_MS", out string? cooldownStr) && int.TryParse(cooldownStr, out int cooldownMs) && cooldownMs >= 0)
+                {
+                    _lockCooldownMs = cooldownMs;
+                    Console.WriteLine($"Lock cooldown configured: {_lockCooldownMs}ms");
+                }
+                else
+                {
+                    Console.WriteLine($"Using default lock cooldown: {_lockCooldownMs}ms");
                 }
 
                 // Success!
@@ -412,6 +491,7 @@ namespace LockStatusService
             shutdownTask.Wait(TimeSpan.FromSeconds(2));
 
             // Cleanup
+            UninstallKeyboardHook(); // Remove keyboard hook
             SystemEvents.SessionSwitch -= SystemEvents_SessionSwitch; // Unsubscribe
             if (_client != null)
             {
@@ -641,11 +721,25 @@ namespace LockStatusService
                         if (placement.showCmd != SW_SHOWMINIMIZED)
                         {
                             SnapPosition snapState = DetectSnapPosition(hWnd, placement);
+
+                            // For maximized windows, save which monitor they're on
+                            Rectangle monitorBounds = Rectangle.Empty;
+                            if (snapState == SnapPosition.Maximized && GetWindowRect(hWnd, out RECT rect))
+                            {
+                                Rectangle windowBounds = new Rectangle(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+                                Screen? screen = Screen.FromRectangle(windowBounds);
+                                if (screen != null)
+                                {
+                                    monitorBounds = screen.WorkingArea;
+                                }
+                            }
+
                             _windowSnapshot.Add(new WindowData
                             {
                                 Handle = hWnd,
                                 Placement = placement,
-                                SnapState = snapState
+                                SnapState = snapState,
+                                MonitorBounds = monitorBounds
                             });
                         }
                     }
@@ -759,14 +853,30 @@ namespace LockStatusService
                     }
 
                     // Skip snapped windows (halves/quadrants) - Windows handles these correctly
-                    // Only restore: None (regular floating), Maximized
                     if (windowData.SnapState != SnapPosition.None && windowData.SnapState != SnapPosition.Maximized)
                     {
                         skippedCount++;
                         continue;
                     }
 
-                    // Restore the window placement
+                    // Handle maximized windows specially - move to correct monitor then maximize
+                    if (windowData.SnapState == SnapPosition.Maximized && windowData.MonitorBounds != Rectangle.Empty)
+                    {
+                        // Restore window to normal state first
+                        ShowWindow(windowData.Handle, SW_RESTORE);
+
+                        // Move window to the center of the saved monitor
+                        int centerX = windowData.MonitorBounds.Left + (windowData.MonitorBounds.Width / 2) - 100;
+                        int centerY = windowData.MonitorBounds.Top + (windowData.MonitorBounds.Height / 2) - 100;
+                        SetWindowPos(windowData.Handle, IntPtr.Zero, centerX, centerY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+                        // Maximize it again
+                        ShowWindow(windowData.Handle, SW_MAXIMIZE);
+                        restoredCount++;
+                        continue;
+                    }
+
+                    // Restore regular floating windows using placement
                     WINDOWPLACEMENT placement = windowData.Placement;
                     if (SetWindowPlacement(windowData.Handle, ref placement))
                     {
@@ -798,6 +908,119 @@ namespace LockStatusService
             }
         }
 
+        // --- Keyboard Hook for Win+L Debounce ---
+
+        /// <summary>
+        /// Installs a low-level keyboard hook to intercept and debounce Win+L keypresses.
+        /// This prevents fingerprint reader lock buttons from spamming the lock command.
+        /// </summary>
+        private static void InstallKeyboardHook()
+        {
+            if (_keyboardHookId != IntPtr.Zero)
+            {
+                Console.WriteLine("Keyboard hook already installed.");
+                return;
+            }
+
+            _keyboardProc = KeyboardHookCallback;
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule!;
+            _keyboardHookId = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardProc, GetModuleHandle(curModule.ModuleName), 0);
+
+            if (_keyboardHookId == IntPtr.Zero)
+            {
+                Console.WriteLine($"Failed to install keyboard hook: {Marshal.GetLastWin32Error()}");
+            }
+            else
+            {
+                Console.WriteLine($"Keyboard hook installed. Win+L cooldown: {_lockCooldownMs}ms");
+            }
+        }
+
+        /// <summary>
+        /// Uninstalls the keyboard hook.
+        /// </summary>
+        private static void UninstallKeyboardHook()
+        {
+            if (_keyboardHookId != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_keyboardHookId);
+                _keyboardHookId = IntPtr.Zero;
+                Console.WriteLine($"Keyboard hook uninstalled. Blocked {_blockedLockCount} repeated Win+L attempts.");
+            }
+        }
+
+        /// <summary>
+        /// Keyboard hook callback. Intercepts Win+L and blocks repeated presses within the cooldown period.
+        /// </summary>
+        private static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0)
+            {
+                var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+                int vk = (int)hookStruct.vkCode;
+                int msg = wParam.ToInt32();
+
+                // Track Win key state
+                if (vk == VK_LWIN || vk == VK_RWIN)
+                {
+                    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+                    {
+                        _winKeyDown = true;
+                    }
+                    else if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
+                    {
+                        _winKeyDown = false;
+                    }
+                }
+
+                // Check for L key while Win is held (Win+L combo)
+                if (vk == VK_L && _winKeyDown && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN))
+                {
+                    var now = DateTime.Now;
+                    var timeSinceLastLock = (now - _lastLockKeyTime).TotalMilliseconds;
+
+                    if (timeSinceLastLock < _lockCooldownMs)
+                    {
+                        // Block the repeated Win+L - we're within cooldown
+                        _blockedLockCount++;
+                        _blockedSinceLastAllow++;
+                        Console.WriteLine($"Blocked Win+L (cooldown: {timeSinceLastLock:F0}ms < {_lockCooldownMs}ms) [Total blocked: {_blockedLockCount}]");
+                        return (IntPtr)1; // Block the keystroke
+                    }
+                    else
+                    {
+                        // Allow the Win+L and reset timer
+                        _lastLockKeyTime = now;
+                        Console.WriteLine($"Win+L allowed (time since last: {timeSinceLastLock:F0}ms)");
+
+                        // Report blocked attempts to Discord if any were blocked since last allow
+                        if (_blockedSinceLastAllow > 0)
+                        {
+                            int blocked = _blockedSinceLastAllow;
+                            _blockedSinceLastAllow = 0;
+                            _ = Task.Run(async () =>
+                            {
+                                if (_channel != null && _client?.ConnectionState == ConnectionState.Connected)
+                                {
+                                    try
+                                    {
+                                        await _channel.SendMessageAsync($"🛡️ Blocked {blocked} repeated Win+L attempt{(blocked > 1 ? "s" : "")} (fingerprint reader spam)");
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Console.WriteLine($"Failed to send block notification: {ex.Message}");
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            return CallNextHookEx(_keyboardHookId, nCode, wParam, lParam);
+        }
+
         // --- Main Entry Point ---
         [STAThread]
         static void Main()
@@ -816,6 +1039,16 @@ namespace LockStatusService
 
             // Configuration loaded successfully, now create the application instance
             var program = new Program();
+
+            // Install keyboard hook for Win+L debounce (prevents fingerprint reader spam)
+            if (_lockCooldownMs > 0)
+            {
+                InstallKeyboardHook();
+            }
+            else
+            {
+                Console.WriteLine("Win+L debounce disabled (LOCK_COOLDOWN_MS=0).");
+            }
 
             // Setup Discord asynchronously AFTER the UI is initialized but before Application.Run()
             // We use Task.Run to avoid blocking the UI thread during initial connection.

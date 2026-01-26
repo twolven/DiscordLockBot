@@ -16,3 +16,9 @@ DESKTOPOK_PATH=
 # Delay in milliseconds before restoring windows after unlock (default: 5000)
 # Increase if your monitor takes longer to wake up from sleep
 MONITOR_DELAY_MS=5000
+
+# --- Win+L Debounce Settings ---
+
+# Cooldown in milliseconds to prevent Win+L spam from fingerprint reader lock buttons
+# Set to 0 to disable. Default is 2000ms (2 seconds)
+LOCK_COOLDOWN_MS=2000
