@@ -84,9 +84,10 @@ namespace LockStatusService
         private static IntPtr _keyboardHookId = IntPtr.Zero;
         private static LowLevelKeyboardProc? _keyboardProc;
         private static DateTime _lastLockKeyTime = DateTime.MinValue;
-        private static bool _winKeyDown = false;
+        private static DateTime _winKeyDownTime = DateTime.MinValue; // When Win key was pressed
         private static int _blockedLockCount = 0;
         private static int _blockedSinceLastAllow = 0; // Tracks blocks since last allowed Win+L
+        private static DateTime _lastBlockTime = DateTime.MinValue; // When the last block occurred
 
         // Keyboard hook constants
         private const int WH_KEYBOARD_LL = 13;
@@ -960,24 +961,28 @@ namespace LockStatusService
                 var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
                 int vk = (int)hookStruct.vkCode;
                 int msg = wParam.ToInt32();
+                var now = DateTime.Now;
 
-                // Track Win key state
+                // Track Win key state with timestamp (prevents stale state issues)
                 if (vk == VK_LWIN || vk == VK_RWIN)
                 {
                     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
                     {
-                        _winKeyDown = true;
+                        _winKeyDownTime = now;
                     }
                     else if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
                     {
-                        _winKeyDown = false;
+                        _winKeyDownTime = DateTime.MinValue;
                     }
                 }
 
                 // Check for L key while Win is held (Win+L combo)
-                if (vk == VK_L && _winKeyDown && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN))
+                // Win key must have been pressed within the last 1 second to count as a combo
+                bool winKeyIsDown = _winKeyDownTime != DateTime.MinValue &&
+                                    (now - _winKeyDownTime).TotalMilliseconds < 1000;
+
+                if (vk == VK_L && winKeyIsDown && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN))
                 {
-                    var now = DateTime.Now;
                     var timeSinceLastLock = (now - _lastLockKeyTime).TotalMilliseconds;
 
                     if (timeSinceLastLock < _lockCooldownMs)
@@ -985,6 +990,7 @@ namespace LockStatusService
                         // Block the repeated Win+L - we're within cooldown
                         _blockedLockCount++;
                         _blockedSinceLastAllow++;
+                        _lastBlockTime = now;
                         Console.WriteLine($"Blocked Win+L (cooldown: {timeSinceLastLock:F0}ms < {_lockCooldownMs}ms) [Total blocked: {_blockedLockCount}]");
                         return (IntPtr)1; // Block the keystroke
                     }
@@ -994,25 +1000,36 @@ namespace LockStatusService
                         _lastLockKeyTime = now;
                         Console.WriteLine($"Win+L allowed (time since last: {timeSinceLastLock:F0}ms)");
 
-                        // Report blocked attempts to Discord if any were blocked since last allow
+                        // Report blocked attempts to Discord, but only if they happened recently (within 10 seconds)
+                        // This avoids confusing reports from ghost presses that happened hours ago
                         if (_blockedSinceLastAllow > 0)
                         {
                             int blocked = _blockedSinceLastAllow;
+                            var timeSinceLastBlock = (now - _lastBlockTime).TotalSeconds;
                             _blockedSinceLastAllow = 0;
-                            _ = Task.Run(async () =>
+
+                            // Only report if blocks happened within the last 10 seconds (actual spam)
+                            if (timeSinceLastBlock <= 10)
                             {
-                                if (_channel != null && _client?.ConnectionState == ConnectionState.Connected)
+                                _ = Task.Run(async () =>
                                 {
-                                    try
+                                    if (_channel != null && _client?.ConnectionState == ConnectionState.Connected)
                                     {
-                                        await _channel.SendMessageAsync($"🛡️ Blocked {blocked} repeated Win+L attempt{(blocked > 1 ? "s" : "")} (fingerprint reader spam)");
+                                        try
+                                        {
+                                            await _channel.SendMessageAsync($"🛡️ Blocked {blocked} repeated Win+L attempt{(blocked > 1 ? "s" : "")} (fingerprint reader spam)");
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Console.WriteLine($"Failed to send block notification: {ex.Message}");
+                                        }
                                     }
-                                    catch (Exception ex)
-                                    {
-                                        Console.WriteLine($"Failed to send block notification: {ex.Message}");
-                                    }
-                                }
-                            });
+                                });
+                            }
+                            else
+                            {
+                                Console.WriteLine($"Discarded {blocked} old block(s) from {timeSinceLastBlock:F0}s ago (ghost press)");
+                            }
                         }
                     }
                 }
