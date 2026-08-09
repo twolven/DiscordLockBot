@@ -11,6 +11,7 @@ A lightweight Windows tray application that monitors your computer's lock status
 - 🟢 Startup/shutdown status notifications in Discord
 - 🔄 Minimal resource usage
 - 🖥️ **Display Recovery** - Automatically restore window positions and desktop icons after unlock (great for OLED monitors that scramble layouts after sleep!)
+- 🌙 **Display Standby Enforcement** - Close the programs that hold a DISPLAY power request (Moonlight, slideshow/presentation windows, media players) after the PC has been locked for a while, so an OLED never sits lit for hours
 
 ## Prerequisites
 
@@ -78,6 +79,8 @@ dotnet publish -c Release
 (Send these in the channel specified in `config.txt`)
 - `!status` - Check the current lock status of the monitored computer.
 - `!lock` - Attempt to lock the monitored computer remotely.
+- `!display` - Show display-standby settings and what is currently keeping the monitors awake.
+- `!sweep` - Close display blockers now, skipping the wait (still requires the PC to be locked).
 - `!help` - Show available commands.
 
 ### Automatic Notifications
@@ -126,6 +129,76 @@ MONITOR_DELAY_MS=5000
 - Window position restoration works independently of DesktopOK
 - If `DESKTOPOK_PATH` is not configured, only window positions are restored
 - The delay allows your monitor to complete its handshake before restoration begins
+
+## Display Standby Enforcement
+
+Windows will not put a monitor into standby while any process holds a DISPLAY power
+request (`SetThreadExecutionState(ES_DISPLAY_REQUIRED)`). Moonlight, a PowerPoint
+slideshow, a media player, or a forgotten "presenting" window will all keep an OLED
+lit indefinitely — which is exactly the situation you do not want to leave running
+while you are away for a week.
+
+When enabled, the app waits until the PC has been **continuously locked** for a
+configurable number of minutes, then closes the offending programs and tells the
+monitors to power off.
+
+**It only ever acts while the PC is locked.** An unlocked session means you are sitting
+at the machine, so nothing is closed — every trigger, including the manual `!sweep`
+command and the tray item, is gated on the live lock state.
+
+### How It Works
+1. **On lock**: a sweep is armed. Unlocking at any point during the wait cancels it.
+2. **After the grace period** (default 30 minutes of unbroken lock):
+   - Every process in `DISPLAY_KILL_PROCESSES` is closed — politely first
+     (`CloseMainWindow`), then force-killed if it ignores the request and
+     `DISPLAY_KILL_FORCE=true`.
+   - If `DISPLAY_KILL_AUTO=true` **and the app is running elevated**, `powercfg /requests`
+     is parsed and anything holding a DISPLAY request is closed too.
+   - `DISPLAY_FORCE_OFF` then broadcasts a monitor power-off — the safety net for a
+     blocker that could not be closed.
+3. A summary is posted to Discord: what was closed, what refused, and what is still
+   holding the display awake.
+
+### Configuration
+```ini
+# --- Display Standby Enforcement (Optional) ---
+
+# Master switch. Everything below is ignored unless this is true.
+DISPLAY_STANDBY_ENFORCE=false
+
+# Comma-separated process names to close (".exe" optional). Works without admin.
+DISPLAY_KILL_PROCESSES=Moonlight,POWERPNT,vlc
+
+# Also auto-discover blockers via 'powercfg /requests' and close them.
+# REQUIRES the app to run elevated; skipped (with a warning) otherwise.
+DISPLAY_KILL_AUTO=false
+
+# Names never closed, on top of the built-in system-process protection list.
+DISPLAY_KILL_EXCLUDE=
+
+# Minutes the PC must stay CONTINUOUSLY locked before anything is closed.
+DISPLAY_KILL_DELAY_MINUTES=30
+
+# Force-kill a process that ignores the polite close request.
+# Set false if you would rather keep unsaved work than guarantee standby.
+DISPLAY_KILL_FORCE=true
+
+# After sweeping, tell the monitors to power off immediately.
+DISPLAY_FORCE_OFF=true
+```
+
+### Safety Notes
+- Core Windows processes (`explorer`, `dwm`, `winlogon`, `csrss`, …) and the app
+  itself are on a hard-coded protection list and are never closed, even if
+  auto-discovery names them. They are reported instead.
+- Processes in other sessions (services, other users) are never touched.
+- If `powercfg /requests` cannot be read — the usual case, since it needs elevation —
+  auto-discovery contributes **nothing**. "Unknown" is never treated as "nothing is
+  blocking", so a failed read can never green-light a kill.
+- `DISPLAY_KILL_FORCE=true` can discard unsaved work in whatever it closes. That is
+  the intended trade for burn-in protection; set it to `false` to reverse the priority.
+- To use `DISPLAY_KILL_AUTO`, launch the app elevated (a scheduled task with
+  "Run with highest privileges" — the `Run` registry key cannot start elevated).
 
 ## Troubleshooting
 ### Bot not responding / Application won't connect
