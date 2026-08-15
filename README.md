@@ -75,6 +75,28 @@ dotnet publish -c Release
    - **Run at Startup:** Toggle whether the application starts automatically when you log into Windows.
    - **Exit:** Close the application (sends a shutdown message to Discord if connected).
 
+### Autostart with elevation (required for `DISPLAY_KILL_AUTO`)
+
+"Run at Startup" uses the HKCU Run key, which cannot launch the app **elevated**.
+`DISPLAY_KILL_AUTO` closes another process's window and needs elevation, so that setup
+requires a "run with highest privileges" logon scheduled task instead.
+
+**Do not create that task by hand with `schtasks /Create`.** Use the included script from
+an elevated PowerShell prompt:
+
+```powershell
+.\Install-ScheduledTask.ps1 -ExePath 'C:\Tools\LockStatusMonitor\lockbot.exe'
+Start-ScheduledTask -TaskName 'LockStatusMonitor'
+```
+
+> ⚠️ **Why this matters.** Both `schtasks /Create` and `Register-ScheduledTask` default
+> `ExecutionTimeLimit` to **72 hours**. Task Scheduler then hard-kills `lockbot.exe`
+> exactly 3 days after it starts. It's a kill, not a crash — no exception handler runs,
+> nothing lands in `lockbot.log`, and no shutdown message reaches Discord. The app just
+> vanishes and lock notifications silently stop. The script sets the limit to unlimited,
+> clears the battery settings (a UPS blip otherwise stops the task the same silent way),
+> and adds a 15-minute backstop trigger that relaunches the app if it is ever down.
+
 ### Discord Commands
 (Send these in the channel specified in `config.txt`)
 - `!status` - Check the current lock status of the monitored computer.
@@ -212,6 +234,26 @@ DISPLAY_FORCE_OFF=true
 1. Check `config.txt` first, as invalid values can cause startup issues. Ensure you replaced the placeholder text correctly.
 2. If compiling from source, ensure the correct .NET SDK is installed and the build completed without errors.
 3. Try running the `.exe` from a command prompt (`cmd` or PowerShell) - it might print error messages to the console before exiting.
+
+### Bot silently stops after ~3 days (scheduled-task autostart)
+If notifications just stop with no error, no crash message in `lockbot.log`, and no 🔴
+shutdown message in Discord — and the log's last line is ordinary activity — Task
+Scheduler killed the app at its 72-hour `ExecutionTimeLimit`. Confirm it:
+
+```powershell
+(Get-ScheduledTaskInfo -TaskName 'LockStatusMonitor').LastTaskResult
+# 267014  (0x41306, SCHED_S_TASK_TERMINATED)  = it was killed, not crashed
+
+(Get-ScheduledTask -TaskName 'LockStatusMonitor').Settings.ExecutionTimeLimit
+# PT72H = the bug.  PT0S = correct (unlimited).
+```
+
+Fix by re-registering the task with `Install-ScheduledTask.ps1` (elevated), which sets an
+unlimited time limit and adds a backstop trigger. See
+[Autostart with elevation](#autostart-with-elevation-required-for-display_kill_auto).
+
+Note that a 72h kill leaves the log ending mid-normal-operation, which reads exactly like
+a hang — check `LastTaskResult` before debugging the app itself.
 
 ### Startup issues ("Run at Startup")
 If the application doesn't start automatically with Windows after enabling the option:
