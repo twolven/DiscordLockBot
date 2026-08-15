@@ -264,5 +264,9 @@ If the application doesn't start automatically with Windows after enabling the o
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
+## Author
+
+[Todd Wolven](https://toddwolven.com/) - Lead AI Software Developer and open-source GenAI engineer
+
 ## License
 MIT
