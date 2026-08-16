@@ -42,6 +42,12 @@ if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item -Path (Join-Path $publishDir '*') -Destination $stage -Recurse -Force
 
+# The installer is part of the deliverable: an autostart task registered by hand inherits
+# kill timers that stop the app days later. Ship it beside the exe, not just in the repo.
+$installer = Join-Path $PSScriptRoot 'Install-ScheduledTask.ps1'
+if (-not (Test-Path $installer)) { throw "Missing Install-ScheduledTask.ps1 - refusing to package a release without the installer." }
+Copy-Item -LiteralPath $installer -Destination $stage -Force
+
 # Overwrite every config.txt in the staged tree, at any depth.
 $configs = Get-ChildItem -LiteralPath $stage -Recurse -Filter 'config.txt'
 foreach ($c in $configs) {

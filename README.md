@@ -96,6 +96,13 @@ Start-ScheduledTask -TaskName 'LockStatusMonitor'
 > vanishes and lock notifications silently stop. The script sets the limit to unlimited,
 > clears the battery settings (a UPS blip otherwise stops the task the same silent way),
 > and adds a 15-minute backstop trigger that relaunches the app if it is ever down.
+>
+> The backstop has a second trap of its own: copying `.Repetition` off a
+> `New-ScheduledTaskTrigger -Once` object inherits `StopAtDurationEnd = $true`, which
+> turns the repetition duration into a *new* kill timer for the running instance — a
+> 1-day duration means the app is terminated once a night and relaunched by the next
+> tick. The script clears that flag and leaves the duration open-ended, then re-reads
+> the registered XML and fails loudly if either kill timer is still present.
 
 ### Discord Commands
 (Send these in the channel specified in `config.txt`)
@@ -254,6 +261,27 @@ unlimited time limit and adds a backstop trigger. See
 
 Note that a 72h kill leaves the log ending mid-normal-operation, which reads exactly like
 a hang — check `LastTaskResult` before debugging the app itself.
+
+### Bot silently restarts every night at the same time
+
+Same silent-kill signature, different timer. A backstop trigger built by copying
+`.Repetition` off a `-Once` trigger carries `StopAtDurationEnd = true`; with a 1-day
+duration, Task Scheduler stops the running instance at the end of each window and the
+next repetition tick starts a fresh one. The tell is a new `=== Lock Status Monitor
+starting (pid N) ===` line landing exactly on a repetition boundary, with no crash line
+and no entry in `crashes.txt`. Check the registered XML — the summary objects do not
+surface this field:
+
+```powershell
+([xml](Export-ScheduledTask -TaskName 'LockStatusMonitor')).Task.Triggers.CalendarTrigger.Repetition
+# StopAtDurationEnd = true  with a Duration set  = the bug.
+# Duration absent ("Indefinitely") and no StopAtDurationEnd = correct.
+```
+
+Re-run `Install-ScheduledTask.ps1` (elevated) to fix it. Note that
+`Microsoft-Windows-TaskScheduler/Operational` is **disabled by default** on Windows, so
+there is no event recording the stop until you enable that log — which is worth doing
+before trying to diagnose any scheduler-initiated kill.
 
 ### Startup issues ("Run at Startup")
 If the application doesn't start automatically with Windows after enabling the option:

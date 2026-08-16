@@ -25,11 +25,19 @@
       * An At-Logon-only trigger never re-fires on a machine you don't log off of, so
         nothing recovers from either case until the next reboot.
 
+      * The obvious way to build the backstop trigger - copying .Repetition off a
+        `New-ScheduledTaskTrigger -Once` object - drags along StopAtDurationEnd = $true.
+        That means "stop all running tasks at the end of the repetition duration", so a
+        1-day duration becomes a fresh 24-hour kill timer: the app is terminated once a
+        night and relaunched by the next repetition tick. Same silent-kill signature as
+        the 72h case, just faster.
+
     This script sets ExecutionTimeLimit to unlimited, clears the battery settings, adds
-    restart-on-failure, and adds a 15-minute backstop trigger. The backstop is free
-    while the app is healthy: MultipleInstances = IgnoreNew means the scheduler will not
-    launch a second instance while the task is running, and lockbot's own single-instance
-    mutex catches anything that slips past. It only ever starts the app when it is down.
+    restart-on-failure, and adds a 15-minute backstop trigger that repeats indefinitely
+    and never stops a healthy instance. The backstop is free while the app is healthy:
+    MultipleInstances = IgnoreNew means the scheduler will not launch a second instance
+    while the task is running, and lockbot's own single-instance mutex catches anything
+    that slips past. It only ever starts the app when it is down.
 
 .PARAMETER ExePath
     Full path to lockbot.exe. Defaults to lockbot.exe beside this script.
@@ -78,10 +86,16 @@ $settings = New-ScheduledTaskSettingsSet `
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 
 # Backstop: re-launch within 15 minutes if the task is ever not running.
+# The two overrides below are load-bearing. The repetition object comes back with
+# StopAtDurationEnd = $true, which turns the duration into a kill timer for the RUNNING
+# instance; a null Duration is what Task Scheduler renders as "Indefinitely".
 $backstop = New-ScheduledTaskTrigger -Daily -At '3:00AM'
-$backstop.Repetition = (New-ScheduledTaskTrigger -Once -At '3:00AM' `
+$repetition = (New-ScheduledTaskTrigger -Once -At '3:00AM' `
     -RepetitionInterval (New-TimeSpan -Minutes 15) `
     -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+$repetition.StopAtDurationEnd = $false
+$repetition.Duration = $null
+$backstop.Repetition = $repetition
 
 Register-ScheduledTask -TaskName $TaskName `
     -Action $action `
@@ -102,9 +116,26 @@ $t.Settings |
 Write-Host "Triggers:"
 $t.Triggers | ForEach-Object {
     "  {0}  start={1}  every={2}  for={3}" -f $_.CimClass.CimClassName,
-        $_.StartBoundary, $_.Repetition.Interval, $_.Repetition.Duration | Write-Host
+        $_.StartBoundary, $_.Repetition.Interval,
+        $(if ($_.Repetition.Duration) { $_.Repetition.Duration } else { 'Indefinitely' }) | Write-Host
+}
+
+# Read the registered XML back rather than trusting the objects above: both kill timers
+# are settings that look harmless in the summary view and only bite days later.
+[xml]$xml = Export-ScheduledTask -TaskName $TaskName
+$repXml = $xml.Task.Triggers.CalendarTrigger.Repetition
+$problems = @()
+if ($xml.Task.Settings.ExecutionTimeLimit -ne 'PT0S') {
+    $problems += "ExecutionTimeLimit is $($xml.Task.Settings.ExecutionTimeLimit), not PT0S - the app WILL be killed when it expires."
+}
+if ($repXml.StopAtDurationEnd -eq 'true' -and $repXml.Duration) {
+    $problems += "Backstop has StopAtDurationEnd=true with Duration=$($repXml.Duration) - the app WILL be killed at the end of every repetition window."
 }
 
 Write-Host ""
-Write-Host "Verify ExecutionTimeLimit reads PT0S. If it reads PT72H, the app WILL be killed after 3 days."
+if ($problems) {
+    $problems | ForEach-Object { Write-Host "PROBLEM: $_" -ForegroundColor Red }
+    throw 'The registered task still contains a kill timer.'
+}
+Write-Host "Verified: ExecutionTimeLimit=PT0S, backstop repeats indefinitely and stops nothing." -ForegroundColor Green
 Write-Host "Start it now with:  Start-ScheduledTask -TaskName '$TaskName'"
