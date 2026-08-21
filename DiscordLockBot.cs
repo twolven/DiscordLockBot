@@ -75,6 +75,12 @@ namespace LockStatusService
         private static string? _token; // No longer const, loaded from file
         private static ulong _channelId; // No longer const, loaded from file
         private const string ConfigFileName = "config.txt"; // Name of the config file
+        // Stamped from <Version> in lockbot.csproj. Every build reported FileVersion 1.0.0.0
+        // before this, so a stale install was indistinguishable from a current one.
+        private static readonly string AppVersion =
+            Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion.Split('+')[0] ?? "unknown";
+
         private static string? _desktopOKPath; // Path to DesktopOK.exe
         private static string? _desktopOKLayout; // Path to .dok layout file
         private static int _monitorDelayMs = 5000; // Delay before restoring windows (default 5000ms)
@@ -315,7 +321,7 @@ namespace LockStatusService
                     File.Move(_logFilePath, old);
                 }
                 Console.SetOut(new TimestampedFileWriter(_logFilePath));
-                Console.WriteLine($"=== Lock Status Monitor starting (pid {Environment.ProcessId}) ===");
+                Console.WriteLine($"=== Lock Status Monitor v{AppVersion} starting (pid {Environment.ProcessId}) ===");
             }
             catch { /* fall back to default console */ }
         }
